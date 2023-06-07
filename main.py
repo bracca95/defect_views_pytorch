@@ -45,7 +45,9 @@ if __name__=="__main__":
         sys.exit(0)
 
     ## start program
+    wandb_mode = "disabled" if config.experiment_name == "disabled" else "online"
     wandb.init(
+        mode=wandb_mode,
         project=config.experiment_name,
         config={
             "learning_rate": 0.001,

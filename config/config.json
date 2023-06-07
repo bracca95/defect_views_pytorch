@@ -1,6 +1,6 @@
 {
-    "experiment_name": "background",
-    "dataset_path": "/media/lorenzo/M/datasets/dataset_opt/2.3_dataset_opt/views7c/img",
+    "experiment_name": "disabled",
+    "dataset_path": "/media/lorenzo/M/datasets/dataset_opt/2.3_dataset_opt/views/img",
     "dataset_type": "opt_bckg",
     "dataset_splits": [
         0.6,
@@ -12,10 +12,7 @@
     "crop_size": 28,
     "image_size": 105,
     "augment_online": null,
-    "augment_offline": [
-        "break",
-        "mark"
-    ],
+    "augment_offline": null,
     "dataset_mean": [
         0.5380716323852539
     ],

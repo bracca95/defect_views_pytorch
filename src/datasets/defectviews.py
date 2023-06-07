@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 
 from PIL import Image
@@ -39,6 +40,7 @@ class GlassOpt(CustomDataset):
 
         self.image_list: Optional[List[str]] = self.get_image_list(self.filt)
         self.label_list: Optional[List[int]] = self.get_label_list()
+        self.mask_list: Optional[List[str]] = self.get_mask_list()
 
         self.crop_size: int = crop_size
         self.img_size: Optional[int] = img_size
@@ -92,6 +94,34 @@ class GlassOpt(CustomDataset):
         Logger.instance().debug(f"Number of images per class: { {i: label_list.count(i) for i in set(label_list)} }")
 
         return [self.label_to_idx[defect] for defect in label_list]
+    
+    def get_mask_list(self) -> List[str]:
+        """Get all the segmentation maps, for each image
+
+        At the moment, it does not work with augmented images. The main problem is that the augmentation is performed
+        randomly, so I should modify the program to enhance images and masks at the same time so that masks are
+        augmented accordingly to their respective image.
+
+        Returns:
+            List[str] with the full path to the masks
+        """
+        
+        if self.augment_online is not None or self.augment_offline is not None:
+            Logger.instance().critical(f"Cannot currently work with augmented masks")
+            sys.exit(-1)
+        
+        if self.image_list is None:
+            self.get_image_list(self.filt)
+
+        # info on labels
+        filenames = list(map(lambda x: os.path.basename(x), self.image_list))
+        label_list = list(map(lambda x: x.rsplit("_")[0], filenames))
+
+        Logger.instance().debug(f"Labels used: {set(label_list)}")
+        Logger.instance().debug(f"Number of images per class: { {i: label_list.count(i) for i in set(label_list)} }")
+
+        filenames = list(map(lambda x: f"{x[0]}_mask.{x[1]}", [os.path.basename(l).rsplit(".", 1) for l in self.image_list]))
+        return list(map(lambda x: os.path.join(os.path.dirname(self.dataset_path), "mask", x), filenames))
     
     def augment_dataset(self, iters: int):
         """Perform offline augmentation
@@ -156,12 +186,33 @@ class GlassOpt(CustomDataset):
             img = transforms.Normalize(self.mean, self.std)(img)
 
         return img # type: ignore
+    
+    def load_mask(self, path: str) -> torch.Tensor:
+
+        label = os.path.basename(path).rsplit("_")[0]
+        mask_pil = Image.open(path).convert("L")
+        
+        # crop
+        if not Tools.check_string(os.path.basename(path), self.NO_CROP, False, False):
+            mask_pil = Processing.crop_no_padding(mask_pil, self.crop_size, path)
+
+        # resize
+        mask_pil = transforms.Resize((self.img_size, self.img_size))(mask_pil)
+
+        # create pixelwise labels
+        classes = list(self.label_to_idx.values())
+        class_labels = [1.0 * (c/max(classes)) for c in classes]     # divide the interval between 0f-1f uniformly
+        
+        mask = transforms.ToTensor()(mask_pil)
+        return mask * class_labels[self.label_to_idx[label]]
+
 
     def __getitem__(self, index):
         curr_img_batch = self.image_list[index]
-        curr_label_batch = self.label_list[index]
+        #curr_label_batch = self.label_list[index]
+        curr_mask_batch = self.mask_list[index]
         
-        return self.load_image(curr_img_batch), curr_label_batch
+        return self.load_image(curr_img_batch), self.load_mask(curr_mask_batch) #curr_label_batch
 
     def __len__(self):
         return len(self.image_list) # type: ignore
