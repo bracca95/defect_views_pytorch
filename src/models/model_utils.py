@@ -6,12 +6,7 @@ from src.models.CNN.cnn_105 import CNN105, CNN105Compare
 from src.models.FSL.ProtoNet.protonet import ProtoNet
 from src.models.pretrained.extractors import TimmFeatureExtractor
 from src.utils.config_parser import Config
-
-
-class Model(nn.Module):
-
-    def __init__(self):
-        super().__init__()
+    
 
 class ModelBuilder:
 

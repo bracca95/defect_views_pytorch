@@ -1,5 +1,7 @@
 import torch.nn as nn
 
+from src.models.model import Model
+
 
 def conv_block(in_channels, out_channels):
     '''
@@ -13,7 +15,7 @@ def conv_block(in_channels, out_channels):
     )
 
 
-class ProtoNet(nn.Module):
+class ProtoNet(Model):
     '''
     Model as described in the reference paper,
     source: https://github.com/jakesnell/prototypical-networks/blob/f0c48808e496989d01db59f86d4449d7aee9ab0c/protonets/models/few_shot.py#L62-L84

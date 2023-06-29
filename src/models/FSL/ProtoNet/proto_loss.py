@@ -1,13 +1,13 @@
 import torch
 
-from typing import Optional
+from typing import Optional, Tuple
+from torch import nn
 from torch.nn import functional as F
-from torch.nn.modules import Module
 
 from config.consts import General as _CG
 
 
-class PrototypicalLoss(Module):
+class PrototypicalLoss(nn.Module):
     '''
     Loss class deriving from Module for the prototypical loss function defined below
     '''
@@ -19,22 +19,61 @@ class PrototypicalLoss(Module):
         return prototypical_loss(x, target, self.n_support)
 
 
-def euclidean_dist(x, y):
-    '''
-    Compute euclidean distance between two tensors
-    '''
-    # x: N x D
-    # y: M x D
-    n = x.size(0)
-    m = y.size(0)
-    d = x.size(1)
-    if d != y.size(1):
-        raise Exception
+class ProtoTools:
+    
+    @staticmethod
+    def euclidean_dist(x, y):
+        '''
+        Compute euclidean distance between two tensors
+        '''
+        # x: N x D
+        # y: M x D
+        n = x.size(0)
+        m = y.size(0)
+        d = x.size(1)
+        if d != y.size(1):
+            raise Exception
 
-    x = x.unsqueeze(1).expand(n, m, d)
-    y = y.unsqueeze(0).expand(n, m, d)
+        x = x.unsqueeze(1).expand(n, m, d)
+        y = y.unsqueeze(0).expand(n, m, d)
 
-    return torch.pow(x - y, 2).sum(2)
+        return torch.pow(x - y, 2).sum(2)
+
+    @staticmethod
+    def split_support_query(recons: torch.Tensor, target: torch.Tensor, n_way: int, n_support: int, n_query: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        # check correct input
+        classes = torch.unique(target)
+        if not n_way == len(classes):
+            raise ValueError(f"number of unique classes ({len(classes)}) must match config n_way ({n_way})")
+        
+        if not target.shape[0] // len(classes) == n_support + n_query:
+            raise ValueError(f"target shape ({target.shape[0]}) does not match support ({n_support}) + query ({n_query})")
+        
+        class_idx = torch.stack(list(map(lambda x: torch.where(target == x)[0], classes)))  # shape = (n_way, s+q)
+        support_idxs, query_idxs = torch.split(class_idx, [n_support, n_query], dim=1)
+
+        support_set = recons[support_idxs.flatten()].view(n_way, n_support, -1)
+        query_set = recons[query_idxs.flatten()].view(n_way, n_query, -1)
+
+        return support_set, query_set
+    
+    @staticmethod
+    def proto_loss(query_batch: torch.Tensor, prototypes: torch.Tensor):
+        n_classes, n_query, n_feat = (query_batch.shape)
+        
+        query_samples = query_batch.view(-1, n_feat)
+        dists = ProtoTools.euclidean_dist(query_samples, prototypes)
+
+        log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)
+        target_inds = torch.arange(0, n_classes).to(_CG.DEVICE)
+        target_inds = target_inds.view(n_classes, 1, 1)
+        target_inds = target_inds.expand(n_classes, n_query, 1).long()
+
+        loss_val = -log_p_y.gather(2, target_inds).squeeze().view(-1).mean()
+        _, y_hat = log_p_y.max(2)
+        acc_val = y_hat.eq(target_inds.squeeze(2)).float().mean()
+
+        return loss_val, acc_val
 
 
 def prototypical_loss(recons, target, n_support):
@@ -52,32 +91,30 @@ def prototypical_loss(recons, target, n_support):
     - n_support: number of samples to keep in account when computing
       barycentres, for each one of the current classes
     '''
-    target_cpu = target.to('cpu')
-    input_cpu = recons.to('cpu')
 
     def supp_idxs(c):
         # FIXME when torch will support where as np
-        return target_cpu.eq(c).nonzero()[:n_support].squeeze(1)
+        return target.eq(c).nonzero()[:n_support].squeeze(1)
 
     # FIXME when torch.unique will be available on cuda too
-    classes = torch.unique(target_cpu)
+    classes = torch.unique(target)
     n_classes = len(classes)
     # FIXME when torch will support where as np
     # assuming n_query, n_target constants
-    n_query = target_cpu.eq(classes[0].item()).sum().item() - n_support
+    n_query = target.eq(classes[0].item()).sum().item() - n_support
 
     support_idxs = list(map(supp_idxs, classes))
 
-    prototypes = torch.stack([input_cpu[idx_list].mean(0) for idx_list in support_idxs])
+    prototypes = torch.stack([recons[idx_list].mean(0) for idx_list in support_idxs])
     # FIXME when torch will support where as np
-    query_idxs = torch.stack(list(map(lambda c: target_cpu.eq(c).nonzero()[n_support:], classes))).view(-1)
+    query_idxs = torch.stack(list(map(lambda c: target.eq(c).nonzero()[n_support:], classes))).view(-1)
 
-    query_samples = recons.to('cpu')[query_idxs]
-    dists = euclidean_dist(query_samples, prototypes)
+    query_samples = recons[query_idxs]
+    dists = ProtoTools.euclidean_dist(query_samples, prototypes)
 
     log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)
 
-    target_inds = torch.arange(0, n_classes)
+    target_inds = torch.arange(0, n_classes).to(_CG.DEVICE)
     target_inds = target_inds.view(n_classes, 1, 1)
     target_inds = target_inds.expand(n_classes, n_query, 1).long()
 
@@ -113,7 +150,7 @@ class TestResult:
         # use retrieved indexes to compute mean of 5 (idx_list) elements per class (output.size = n_classes * flatten_features)
         prototypes = torch.stack([recons[idx_list].mean(0) for idx_list in support_idxs])
         query_samples = recons[query_idxs.view(-1)]
-        dists = euclidean_dist(query_samples, prototypes)   # dim: (n_cls * sam_per_class, n_classes)
+        dists = ProtoTools.euclidean_dist(query_samples, prototypes)   # dim: (n_cls * sam_per_class, n_classes)
 
         # softmax of negative distance otherwise the softmax is negative (the highest value must be the closest)
         log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)

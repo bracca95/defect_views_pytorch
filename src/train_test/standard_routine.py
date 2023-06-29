@@ -11,6 +11,7 @@ from torchvision.utils import make_grid
 from src.datasets.staple_dataset import CustomDataset
 from config.consts import General as _CG
 from config.consts import SubsetsDict
+from src.models.model import Model
 from src.train_test.routine import TrainTest
 from src.utils.config_parser import Config
 from src.utils.tools import Logger, Tools
@@ -18,7 +19,7 @@ from src.utils.tools import Logger, Tools
 
 class StandardRoutine(TrainTest):
 
-    def __init__(self, model: nn.Module, dataset: CustomDataset, subsets_dict: SubsetsDict):
+    def __init__(self, model: Model, dataset: CustomDataset, subsets_dict: SubsetsDict):
         super().__init__(model, dataset, subsets_dict)
 
         self.criterion = nn.CrossEntropyLoss()

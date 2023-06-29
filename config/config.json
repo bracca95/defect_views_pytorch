@@ -10,17 +10,17 @@
     "batch_size": 32,
     "epochs": 100,
     "crop_size": 60,
-    "image_size": 224,
+    "image_size": 105,
     "augment_online": null,
     "augment_offline": null,
     "dataset_mean": [
-        0.5874031186103821
+        0.5874078273773193
     ],
     "dataset_std": [
-        0.0904732421040535
+        0.09033174067735672
     ],
     "fsl": {
-        "model": "vit_tiny_patch16_224",
+        "model": "default",
         "episodes": 100,
         "train_n_way": 12,
         "train_k_shot_s": 5,

@@ -9,9 +9,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 from typing import List
 
+from src.models.model import Model
+from src.models.FSL.IPN.weight_module import Weight
 from src.models.FSL.ProtoNet.proto_batch_sampler import PrototypicalBatchSampler
 from src.models.FSL.ProtoNet.proto_loss import prototypical_loss as loss_fn
-from src.models.FSL.ProtoNet.proto_loss import TestResult
+from src.models.FSL.ProtoNet.proto_loss import ProtoTools, TestResult
 from src.utils.tools import Tools, Logger
 from src.utils.config_parser import Config
 from src.datasets.staple_dataset import CustomDataset
@@ -22,7 +24,7 @@ from config.consts import SubsetsDict
 
 class ProtoRoutine(TrainTest):
 
-    def __init__(self, model: nn.Module, dataset: CustomDataset, subsets_dict: SubsetsDict):
+    def __init__(self, model: Model, dataset: CustomDataset, subsets_dict: SubsetsDict):
         super().__init__(model, dataset, subsets_dict)
         self.learning_rate = 0.001
         self.lr_scheduler_gamma = 0.5
@@ -61,6 +63,15 @@ class ProtoRoutine(TrainTest):
             gamma=self.lr_scheduler_gamma,
             step_size=self.lr_scheduler_step
         )
+
+        ## extra modules
+        n_way, k_support, k_query = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q)
+        dummy_batch = torch.Tensor(next(iter(trainloader))[0]).detach().to(_CG.DEVICE)
+        proto_out_size = Model.get_output_size(self.model, dummy_batch)
+        del dummy_batch
+        
+        # weight
+        weight_module = Weight(proto_out_size * k_support, k_support).to(_CG.DEVICE)
         
         train_loss = []
         train_acc = []
@@ -86,7 +97,10 @@ class ProtoRoutine(TrainTest):
                 optim.zero_grad()
                 x, y = x.to(_CG.DEVICE), y.to(_CG.DEVICE)
                 model_output = self.model(x)
-                loss, acc = loss_fn(model_output, target=y, n_support=config.fsl.train_k_shot_s)
+                s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
+                prototypes = weight_module(s_batch.view(s_batch.shape[0], -1))
+                # loss, acc = loss_fn(model_output, target=y, n_support=config.fsl.train_k_shot_s)
+                loss, acc = ProtoTools.proto_loss(q_batch, prototypes)
                 loss.backward()
                 optim.step()
                 train_loss.append(loss.item())
