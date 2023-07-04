@@ -23,11 +23,13 @@ class ProtoTools:
     
     @staticmethod
     def euclidean_dist(x, y):
-        '''
-        Compute euclidean distance between two tensors
-        '''
-        # x: N x D
-        # y: M x D
+        """Compute euclidean distance between two tensors
+        
+        Args:
+            x (torch.Tensor) of size N x D
+            y (torch.Tensor) of size M x D
+        """
+        
         n = x.size(0)
         m = y.size(0)
         d = x.size(1)
@@ -58,11 +60,12 @@ class ProtoTools:
         return support_set, query_set
     
     @staticmethod
-    def proto_loss(query_batch: torch.Tensor, prototypes: torch.Tensor):
-        n_classes, n_query, n_feat = (query_batch.shape)
+    def proto_loss(alphas: Optional[torch.Tensor], q_batch: torch.Tensor, protos: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        n_classes, n_query, n_feat = (q_batch.shape)
         
-        query_samples = query_batch.view(-1, n_feat)
-        dists = ProtoTools.euclidean_dist(query_samples, prototypes)
+        query_samples = q_batch.view(-1, n_feat)
+        dists = ProtoTools.euclidean_dist(query_samples, protos)
+        dists = dists if alphas is None else dists * alphas
 
         log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)
         target_inds = torch.arange(0, n_classes).to(_CG.DEVICE)

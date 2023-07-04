@@ -11,6 +11,7 @@ from typing import List
 
 from src.models.model import Model
 from src.models.FSL.IPN.weight_module import Weight
+from src.models.FSL.IPN.distance_module import DistScale
 from src.models.FSL.ProtoNet.proto_batch_sampler import PrototypicalBatchSampler
 from src.models.FSL.ProtoNet.proto_loss import prototypical_loss as loss_fn
 from src.models.FSL.ProtoNet.proto_loss import ProtoTools, TestResult
@@ -70,8 +71,11 @@ class ProtoRoutine(TrainTest):
         proto_out_size = Model.get_output_size(self.model, dummy_batch)
         del dummy_batch
         
-        # weight
+        # weight module
         weight_module = Weight(proto_out_size * k_support, k_support).to(_CG.DEVICE)
+
+        # distance scale module
+        dist_module = DistScale(proto_out_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
         
         train_loss = []
         train_acc = []
@@ -97,10 +101,13 @@ class ProtoRoutine(TrainTest):
                 optim.zero_grad()
                 x, y = x.to(_CG.DEVICE), y.to(_CG.DEVICE)
                 model_output = self.model(x)
+                
                 s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
                 prototypes = weight_module(s_batch.view(s_batch.shape[0], -1))
-                # loss, acc = loss_fn(model_output, target=y, n_support=config.fsl.train_k_shot_s)
-                loss, acc = ProtoTools.proto_loss(q_batch, prototypes)
+                s_cat_q = DistScale.cat_support_query(s_batch, q_batch)
+                alphas = dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
+                
+                loss, acc = ProtoTools.proto_loss(alphas, q_batch, prototypes)
                 loss.backward()
                 optim.step()
                 train_loss.append(loss.item())
