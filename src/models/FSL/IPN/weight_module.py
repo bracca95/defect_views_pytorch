@@ -11,7 +11,7 @@ class Weight(nn.Module):
         super().__init__()
         self.linear = nn.Sequential(
             nn.Linear(in_len, k_shot),
-            nn.Softmax(dim=1)
+            nn.Sigmoid()
         )
 
     def forward(self, x):

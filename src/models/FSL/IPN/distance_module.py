@@ -9,8 +9,8 @@ class DistScale(nn.Module):
     def __init__(self, in_len: int, k_shot: int):
         super().__init__()
         self.linear = nn.Sequential(
-            nn.Linear(in_len, k_shot)
-            #,nn.Relu()
+            nn.Linear(in_len, k_shot),
+            nn.Sigmoid()
         )
 
     @staticmethod
@@ -44,5 +44,5 @@ class DistScale(nn.Module):
     def forward(self, x):
         out = self.linear(x)
         out = torch.sum(out, dim=1)
-        return F.softmax(out, dim=0)
-        #return out
+        #return F.softmax(out, dim=0)
+        return out

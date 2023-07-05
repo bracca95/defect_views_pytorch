@@ -171,3 +171,27 @@ class TestResult:
         self.target_inds = torch.cat((self.target_inds, target_inds.flatten()))
 
         return acc_overall, { v: acc_vals[i] for i, v in enumerate(mapping.values()) }
+    
+
+    def proto_test2(self, alphas: Optional[torch.Tensor], q_batch: torch.Tensor, protos: torch.Tensor):
+        n_classes, n_query, n_feat = (q_batch.shape)
+        mapping = {i: i for i in range(n_classes)}
+        
+        query_samples = q_batch.view(-1, n_feat)
+        dists = ProtoTools.euclidean_dist(query_samples, protos)
+        dists = dists if alphas is None else dists * alphas
+
+        log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)
+        target_inds = torch.arange(0, n_classes).to(_CG.DEVICE)
+        target_inds = target_inds.view(n_classes, 1, 1)
+        target_inds = target_inds.expand(n_classes, n_query, 1).long()
+
+        _, y_hat = log_p_y.max(2)
+        acc_overall = y_hat.eq(target_inds.squeeze(2)).float().mean()
+        acc_vals = { c: y_hat[c].eq(target_inds.squeeze(2)[c]).float().mean() for c in range(n_classes) }
+
+        self.acc_overall = torch.cat((self.acc_overall, acc_overall.flatten()))
+        self.y_hat = torch.cat((self.y_hat, y_hat.flatten()))
+        self.target_inds = torch.cat((self.target_inds, target_inds.flatten()))
+
+        return acc_overall, { v: acc_vals[i] for i, v in enumerate(mapping.values()) }
