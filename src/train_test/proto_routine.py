@@ -5,9 +5,8 @@ import wandb
 import numpy as np
 
 from tqdm import tqdm
-from torch import nn
 from torch.utils.data import DataLoader
-from typing import List
+from typing import Tuple, List
 
 from src.models.model import Model
 from src.models.FSL.ProtoNet.proto_batch_sampler import PrototypicalBatchSampler
@@ -63,6 +62,7 @@ class ProtoRoutine(TrainTest):
         )
 
         n_way, k_support, k_query = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q)
+        val_config = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q, config.fsl.episodes)
         
         train_loss = []
         train_acc = []
@@ -115,7 +115,7 @@ class ProtoRoutine(TrainTest):
 
             ## VALIDATION
             if valloader is not None:
-                avg_loss_eval, avg_acc_eval = self.validate(config, valloader, val_loss, val_acc)
+                avg_loss_eval, avg_acc_eval = self.validate(val_config, valloader, val_loss, val_acc)
                 if avg_acc_eval >= best_acc:
                     Logger.instance().debug(f"Found the best evaluation model at epoch {epoch}!")
                     torch.save(self.model.state_dict(), val_model_path)
@@ -139,19 +139,22 @@ class ProtoRoutine(TrainTest):
 
                 return
 
-    def validate(self, config: Config, valloader: DataLoader, val_loss: List[float], val_acc: List[float]):
+    def validate(self, val_config: Tuple, valloader: DataLoader, val_loss: List[float], val_acc: List[float]):
         Logger.instance().debug("Validating!")
+
+        n_way, k_support, k_query, episodes = (val_config)
         
         self.model.eval()
         with torch.no_grad():
             for x, y in valloader:
                 x, y = x.to(_CG.DEVICE), y.to(_CG.DEVICE)
                 model_output = self.model(x)
-                loss, acc = loss_fn(model_output, target=y, n_support=config.fsl.test_k_shot_s)
+                s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
+                loss, acc = ProtoTools.proto_loss(s_batch, q_batch)
                 val_loss.append(loss.item())
                 val_acc.append(acc.item())
-            avg_loss_eval = np.mean(val_loss[-config.fsl.episodes:])
-            avg_acc_eval = np.mean(val_acc[-config.fsl.episodes:])
+            avg_loss_eval = np.mean(val_loss[-episodes:])
+            avg_acc_eval = np.mean(val_acc[-episodes:])
 
         Logger.instance().debug(f"Avg Val Loss: {avg_loss_eval}, Avg Val Acc: {avg_acc_eval}")
 
@@ -194,7 +197,7 @@ class ProtoRoutine(TrainTest):
                     s_batch, q_batch = ProtoTools.split_support_query(y_pred, y, n_way, k_support, k_query)
                     
                     # (overall accuracy [legacy], accuracy per class)
-                    legacy_acc, acc_vals = tr.proto_test2(s_batch, q_batch)
+                    legacy_acc, acc_vals = tr.proto_test(s_batch, q_batch)
                     legacy_avg_acc.append(legacy_acc.item())
                     for k, v in acc_vals.items():
                         score_per_class[k] = torch.cat((score_per_class[k], v.reshape(1,)))
