@@ -57,35 +57,18 @@ class ProtoTools:
         query_dists = ProtoTools.euclidean_dist(q_batch.view(-1, n_feat), protos)
         mean_dists = torch.mean(proto_dists.view(n_classes, -1, n_classes), dim=1)
         
-        # proto vs query
-        proto_exp = proto_dists.unsqueeze(0).expand(query_dists.size(0), -1, -1)
-        query_exp = query_dists.unsqueeze(1).expand(-1, proto_dists.size(0), -1)
-        #sim = torch.nn.CosineSimilarity(dim=2)(proto_exp, query_exp)
-        dis = torch.sqrt(torch.pow(proto_exp - query_exp, 2).sum(2))
-        # #idx = torch.argmax(sim, dim=-1)
-        # #idx_class = torch.div(idx, n_query, rounding_mode='floor')
-        
-        # # mean vs query
-        # mean_exp = mean_dists.unsqueeze(0).expand(query_dists.size(0), -1, -1)
-        # query_exp = query_dists.unsqueeze(1).expand(-1, mean_dists.size(0), -1)
-        # #sim = torch.nn.CosineSimilarity(dim=2)(mean_exp, query_exp)
-        # dis = torch.sqrt(torch.pow(mean_exp - query_exp, 2).sum(2))
+        # mean vs query
+        mean_exp = mean_dists.unsqueeze(0).expand(query_dists.size(0), -1, -1)
+        query_exp = query_dists.unsqueeze(1).expand(-1, mean_dists.size(0), -1)
+        dis = torch.sqrt(torch.pow(mean_exp - query_exp, 2).sum(2))
 
         log_p_y = F.log_softmax(-dis, dim=1).view(n_classes, n_query, -1)
-        #log_p_y = idx_class.view(n_classes, n_query, -1)
         target_inds = torch.arange(0, n_classes).to(_CG.DEVICE)
         target_inds = target_inds.view(n_classes, 1, 1)
         target_inds = target_inds.expand(n_classes, n_query, 1).long()
 
         loss_val = -log_p_y.gather(2, target_inds).squeeze().view(-1).mean()
-        _, idx_class = log_p_y.max(2)   # idx = torch.argmax(sim, dim=-1)
-        
-        # proto vs query
-        y_hat = torch.div(idx_class, n_query, rounding_mode="floor")
-
-        # # mean vs query
-        # y_hat = idx_class.clone()
-        
+        _, y_hat = log_p_y.max(2)
         acc_val = y_hat.eq(target_inds.squeeze(2)).float().mean()
 
         return loss_val, acc_val
