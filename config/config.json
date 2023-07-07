@@ -1,5 +1,5 @@
 {
-    "experiment_name": "disabled",
+    "experiment_name": "IPN",
     "dataset_path": "/media/lorenzo/M/datasets/dataset_qplus/views/img",
     "dataset_type": "qplusv2",
     "dataset_splits": [

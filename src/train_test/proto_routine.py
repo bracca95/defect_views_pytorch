@@ -7,13 +7,12 @@ import numpy as np
 from tqdm import tqdm
 from torch import nn
 from torch.utils.data import DataLoader
-from typing import List
+from typing import List, Tuple, Optional
 
 from src.models.model import Model
 from src.models.FSL.IPN.weight_module import Weight
 from src.models.FSL.IPN.distance_module import DistScale
 from src.models.FSL.ProtoNet.proto_batch_sampler import PrototypicalBatchSampler
-from src.models.FSL.ProtoNet.proto_loss import prototypical_loss as loss_fn
 from src.models.FSL.ProtoNet.proto_loss import ProtoTools, TestResult
 from src.utils.tools import Tools, Logger
 from src.utils.config_parser import Config
@@ -30,6 +29,11 @@ class ProtoRoutine(TrainTest):
         self.learning_rate = 0.001
         self.lr_scheduler_gamma = 0.5
         self.lr_scheduler_step = 20
+
+        # extra modules
+        self.embedding_size: Optional[int] = None
+        self.weight_module: Optional[Weight] = None
+        self.dist_module: Optional[DistScale] = None
 
     def init_loader(self, config: Config, split_set: str):
         current_subset = self.get_subset_info(split_set)
@@ -54,9 +58,28 @@ class ProtoRoutine(TrainTest):
         Logger.instance().debug("Start training")
         if config.fsl is None:
             raise ValueError(f"missing field `fsl` in config.json")
+        
+        ### extra modules
+        n_way, k_support, k_query = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q)
+        val_config = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q, config.fsl.episodes)
+        dummyloader = self.init_loader(config, self.train_str)
+        if dummyloader is None:
+            Logger.instance().warning("Dummyloader is None. No training performed")
+            return
+        
+        dummy_batch = torch.Tensor(next(iter(dummyloader))[0]).detach().to(_CG.DEVICE)
+        self.embedding_size = Model.get_output_size(self.model, dummy_batch)
+        self.weight_module = Weight(self.embedding_size * k_support, k_support).to(_CG.DEVICE)
+        self.dist_module = DistScale(self.embedding_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
+        del dummy_batch, dummyloader
+        ### EOF
 
         trainloader = self.init_loader(config, self.train_str)
         valloader = self.init_loader(config, self.val_str)
+
+        if trainloader is None:
+            Logger.instance().warning("Trainloader is None: no training performed.")
+            return
         
         optim = torch.optim.Adam(params=self.model.parameters(), lr=self.learning_rate)
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
@@ -64,18 +87,6 @@ class ProtoRoutine(TrainTest):
             gamma=self.lr_scheduler_gamma,
             step_size=self.lr_scheduler_step
         )
-
-        ## extra modules
-        n_way, k_support, k_query = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q)
-        dummy_batch = torch.Tensor(next(iter(trainloader))[0]).detach().to(_CG.DEVICE)
-        proto_out_size = Model.get_output_size(self.model, dummy_batch)
-        del dummy_batch
-        
-        # weight module
-        weight_module = Weight(proto_out_size * k_support, k_support).to(_CG.DEVICE)
-
-        # distance scale module
-        dist_module = DistScale(proto_out_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
         
         train_loss = []
         train_acc = []
@@ -103,9 +114,9 @@ class ProtoRoutine(TrainTest):
                 model_output = self.model(x)
                 
                 s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
-                prototypes = weight_module(s_batch.view(s_batch.shape[0], -1))
+                prototypes = self.weight_module(s_batch.view(s_batch.shape[0], -1))
                 s_cat_q = DistScale.cat_support_query(s_batch, q_batch)
-                alphas = dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
+                alphas = self.dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
                 
                 loss, acc = ProtoTools.proto_loss(alphas, q_batch, prototypes)
                 loss.backward()
@@ -124,8 +135,8 @@ class ProtoRoutine(TrainTest):
                 Logger.instance().debug(f"Found the best model at epoch {epoch}!")
                 best_acc = avg_acc
                 torch.save(self.model.state_dict(), best_model_path)
-                torch.save(weight_module.state_dict(), os.path.join(os.path.dirname(best_model_path), "best_weight.pth"))
-                torch.save(dist_module.state_dict(), os.path.join(os.path.dirname(best_model_path), "best_scale.pth"))
+                torch.save(self.weight_module.state_dict(), os.path.join(os.path.dirname(best_model_path), "best_weight.pth"))
+                torch.save(self.dist_module.state_dict(), os.path.join(os.path.dirname(best_model_path), "best_scale.pth"))
 
             if avg_loss < best_loss:
                 best_loss = avg_loss
@@ -135,10 +146,12 @@ class ProtoRoutine(TrainTest):
 
             ## VALIDATION
             if valloader is not None:
-                avg_loss_eval, avg_acc_eval = self.validate(config, valloader, val_loss, val_acc)
+                avg_loss_eval, avg_acc_eval = self.validate(val_config, valloader, val_loss, val_acc)
                 if avg_acc_eval >= best_acc:
                     Logger.instance().debug(f"Found the best evaluation model at epoch {epoch}!")
                     torch.save(self.model.state_dict(), val_model_path)
+                    torch.save(self.weight_module.state_dict(), os.path.join(os.path.dirname(val_model_path), "val_weight.pth"))
+                    torch.save(self.dist_module.state_dict(), os.path.join(os.path.dirname(val_model_path), "val_scale.pth"))
 
                 # wandb
                 wdb_dict["val_loss"] = avg_loss_eval
@@ -149,31 +162,39 @@ class ProtoRoutine(TrainTest):
             wandb.log(wdb_dict)
 
             # stop conditions and save last model
-            if eidx == config.epochs-1 or best_acc >= 1.0-_CG.EPS_ACC or best_loss <= 0.0+_CG.EPS_LSS:
+            if eidx == config.epochs-1 or self.check_stop_conditions(best_acc):
                 pth_path = last_val_model_path if valloader is not None else last_model_path
                 Logger.instance().debug(f"STOP: saving last epoch model named `{os.path.basename(pth_path)}`")
                 torch.save(self.model.state_dict(), pth_path)
-                torch.save(weight_module.state_dict(), os.path.join(os.path.dirname(pth_path), "last_weight.pth"))
-                torch.save(dist_module.state_dict(), os.path.join(os.path.dirname(pth_path), "last_scale.pth"))
+                torch.save(self.weight_module.state_dict(), os.path.join(os.path.dirname(pth_path), "last_weight.pth"))
+                torch.save(self.dist_module.state_dict(), os.path.join(os.path.dirname(pth_path), "last_scale.pth"))
 
                 # wandb: save all models
                 wandb.save(f"{out_folder}/*.pth")
 
                 return
 
-    def validate(self, config: Config, valloader: DataLoader, val_loss: List[float], val_acc: List[float]):
+    def validate(self, val_config: Tuple, valloader: DataLoader, val_loss: List[float], val_acc: List[float]):
         Logger.instance().debug("Validating!")
+
+        n_way, k_support, k_query, episodes = (val_config)
         
         self.model.eval()
         with torch.no_grad():
             for x, y in valloader:
                 x, y = x.to(_CG.DEVICE), y.to(_CG.DEVICE)
                 model_output = self.model(x)
-                loss, acc = loss_fn(model_output, target=y, n_support=config.fsl.test_k_shot_s)
+                
+                s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
+                prototypes = self.weight_module(s_batch.view(s_batch.shape[0], -1))
+                s_cat_q = DistScale.cat_support_query(s_batch, q_batch)
+                alphas = self.dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
+                loss, acc = ProtoTools.proto_loss(alphas, q_batch, prototypes)
+
                 val_loss.append(loss.item())
                 val_acc.append(acc.item())
-            avg_loss_eval = np.mean(val_loss[-config.fsl.episodes:])
-            avg_acc_eval = np.mean(val_acc[-config.fsl.episodes:])
+            avg_loss_eval = np.mean(val_loss[-episodes:])
+            avg_acc_eval = np.mean(val_acc[-episodes:])
 
         Logger.instance().debug(f"Avg Val Loss: {avg_loss_eval}, Avg Val Acc: {avg_acc_eval}")
 
@@ -199,16 +220,24 @@ class ProtoRoutine(TrainTest):
         
         ## extra modules
         n_way, k_support, k_query = (config.fsl.test_n_way, config.fsl.test_k_shot_s, config.fsl.test_k_shot_q)
-        #dummy_batch = torch.Tensor(next(iter(testloader))[0]).detach().to(_CG.DEVICE)
-        #proto_out_size = Model.get_output_size(self.model, dummy_batch)
-        #del dummy_batch
+        if self.weight_module is None or self.dist_module is None or self.embedding_size is None:
+            dummyloader = self.init_loader(config, self.test_str)
+            if dummyloader is None:
+                Logger.instance().warning("Dummyloader is None. No test performed")
+                return
+        
+            dummy_batch = torch.Tensor(next(iter(dummyloader))[0]).detach().to(_CG.DEVICE)
+            self.embedding_size = Model.get_output_size(self.model, dummy_batch)
+            self.weight_module = Weight(self.embedding_size * k_support, k_support).to(_CG.DEVICE)
+            self.dist_module = DistScale(self.embedding_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
+            del dummy_batch, dummyloader
         
         # weight module
-        weight_module = Weight(2304 * k_support, k_support).to(_CG.DEVICE)
+        weight_module = Weight(self.embedding_size * k_support, k_support).to(_CG.DEVICE)
         weight_module.load_state_dict(torch.load(os.path.join(os.path.dirname(model_path), "best_weight.pth")))
 
         # distance scale module
-        dist_module = DistScale(2304 * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
+        dist_module = DistScale(self.embedding_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
         dist_module.load_state_dict(torch.load(os.path.join(os.path.dirname(model_path), "best_scale.pth")))
         
         legacy_avg_acc = list()
@@ -231,16 +260,14 @@ class ProtoRoutine(TrainTest):
                     s_cat_q = DistScale.cat_support_query(s_batch, q_batch)
                     alphas = dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
                     
-                    legacy_acc, acc_vals = tr.proto_test2(alphas, q_batch, prototypes)
-
-                    # (overall accuracy [legacy], accuracy per class)
-                    legacy_acc, acc_vals = tr.proto_test(y_pred, target=y, n_support=config.fsl.test_k_shot_s)
+                    legacy_acc, acc_vals = tr.proto_test(alphas, q_batch, prototypes)
                     legacy_avg_acc.append(legacy_acc.item())
                     for k, v in acc_vals.items():
                         score_per_class[k] = torch.cat((score_per_class[k], v.reshape(1,)))
                 
                 avg_score_class = { k: torch.mean(v) for k, v in score_per_class.items() }
-                Logger.instance().debug(f"at epoch {epoch}, average test accuracy: {avg_score_class}")
+                avg_score_class_print = { k: v.item() for (k, v) in zip(self.test_info.info_dict.keys(), avg_score_class.values()) }
+                Logger.instance().debug(f"at epoch {epoch}, average test accuracy: {avg_score_class_print}")
 
                 for k, v in avg_score_class.items():
                     acc_per_epoch[k] = torch.cat((acc_per_epoch[k], v.reshape(1,)))
@@ -250,7 +277,8 @@ class ProtoRoutine(TrainTest):
                     tr_max = tr
 
         avg_acc_epoch = { k: torch.mean(v) for k, v in acc_per_epoch.items() }
-        Logger.instance().debug(f"Accuracy on epochs: {avg_acc_epoch}")
+        avg_acc_epoch_print = { k: v.item() for (k, v) in zip(self.test_info.info_dict.keys(), avg_acc_epoch.values()) }
+        Logger.instance().debug(f"Accuracy on epochs: {avg_acc_epoch_print}")
         
         legacy_avg_acc = np.mean(legacy_avg_acc)
         Logger.instance().debug(f"Legacy test accuracy: {legacy_avg_acc}")

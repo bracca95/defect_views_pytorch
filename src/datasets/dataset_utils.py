@@ -113,6 +113,7 @@ class DatasetBuilder:
 
         subsets = random_split(dataset, split_lens)
         val_set = subsets[1] if len(split_lens) == 3 and len(subsets[1]) > 0 else None
+        subsets = [s if len(s) > 0 else None for s in subsets]
 
         train_str, val_str, test_str = _GC.DEFAULT_SUBSETS
         Logger.instance().debug(f"Splitting dataset: {split_lens}")
