@@ -1,11 +1,11 @@
 {
-    "experiment_name": "IPN",
+    "experiment_name": "disabled",
     "dataset_path": "/media/lorenzo/M/datasets/dataset_qplus/views/img",
     "dataset_type": "qplusv2",
     "dataset_splits": [
         0.7,
-        0.0,
-        0.3
+        0.3,
+        0.0
     ],
     "batch_size": 32,
     "epochs": 100,

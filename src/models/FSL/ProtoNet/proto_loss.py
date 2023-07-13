@@ -30,7 +30,6 @@ class ProtoTools:
 
     @staticmethod
     def split_support_query(recons: torch.Tensor, target: torch.Tensor, n_way: int, n_support: int, n_query: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        # check correct input
         classes = torch.unique(target)
         if not n_way == len(classes):
             raise ValueError(f"number of unique classes ({len(classes)}) must match config n_way ({n_way})")
@@ -47,12 +46,20 @@ class ProtoTools:
         return support_set, query_set
     
     @staticmethod
+    def get_mean_dist(s_batch: torch.Tensor, protos: torch.Tensor) -> torch.Tensor:
+        n_classes, _, n_feat = (s_batch.shape)
+        
+        proto_dists = ProtoTools.euclidean_dist(s_batch.view(-1, n_feat), protos)
+        mean_dists = torch.mean(proto_dists.view(n_classes, -1, n_classes), dim=1)
+
+        return mean_dists
+    
+    @staticmethod
     def proto_loss(alphas: Optional[torch.Tensor], q_batch: torch.Tensor, protos: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         n_classes, n_query, n_feat = (q_batch.shape)
         
-        query_samples = q_batch.view(-1, n_feat)
-        dists = ProtoTools.euclidean_dist(query_samples, protos)
-        dists = dists if alphas is None else dists * alphas
+        dists = ProtoTools.euclidean_dist(q_batch.view(-1, n_feat), protos)
+        dists = dists if alphas is None else alphas * dists
 
         log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)
         target_inds = torch.arange(0, n_classes).to(_CG.DEVICE)
@@ -76,9 +83,8 @@ class TestResult:
         n_classes, n_query, n_feat = (q_batch.shape)
         mapping = {i: i for i in range(n_classes)}
         
-        query_samples = q_batch.view(-1, n_feat)
-        dists = ProtoTools.euclidean_dist(query_samples, protos)
-        dists = dists if alphas is None else dists * alphas
+        dists = ProtoTools.euclidean_dist(q_batch.view(-1, n_feat), protos)
+        dists = dists if alphas is None else alphas * dists
 
         log_p_y = F.log_softmax(-dists, dim=1).view(n_classes, n_query, -1)
         target_inds = torch.arange(0, n_classes).to(_CG.DEVICE)

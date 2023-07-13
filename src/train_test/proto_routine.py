@@ -5,12 +5,10 @@ import wandb
 import numpy as np
 
 from tqdm import tqdm
-from torch import nn
 from torch.utils.data import DataLoader
-from typing import List, Tuple, Optional
+from typing import Tuple, List, Optional
 
 from src.models.model import Model
-from src.models.FSL.IPN.weight_module import Weight
 from src.models.FSL.IPN.distance_module import DistScale
 from src.models.FSL.ProtoNet.proto_batch_sampler import PrototypicalBatchSampler
 from src.models.FSL.ProtoNet.proto_loss import ProtoTools, TestResult
@@ -32,7 +30,6 @@ class ProtoRoutine(TrainTest):
 
         # extra modules
         self.embedding_size: Optional[int] = None
-        self.weight_module: Optional[Weight] = None
         self.dist_module: Optional[DistScale] = None
 
     def init_loader(self, config: Config, split_set: str):
@@ -58,7 +55,7 @@ class ProtoRoutine(TrainTest):
         Logger.instance().debug("Start training")
         if config.fsl is None:
             raise ValueError(f"missing field `fsl` in config.json")
-        
+
         ### extra modules
         n_way, k_support, k_query = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q)
         val_config = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q, config.fsl.episodes)
@@ -69,17 +66,12 @@ class ProtoRoutine(TrainTest):
         
         dummy_batch = torch.Tensor(next(iter(dummyloader))[0]).detach().to(_CG.DEVICE)
         self.embedding_size = Model.get_output_size(self.model, dummy_batch)
-        self.weight_module = Weight(self.embedding_size * k_support, k_support).to(_CG.DEVICE)
-        self.dist_module = DistScale(self.embedding_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
+        self.dist_module = DistScale(n_way * n_way, n_way).to(_CG.DEVICE)
         del dummy_batch, dummyloader
         ### EOF
 
         trainloader = self.init_loader(config, self.train_str)
         valloader = self.init_loader(config, self.val_str)
-
-        if trainloader is None:
-            Logger.instance().warning("Trainloader is None: no training performed.")
-            return
         
         optim = torch.optim.Adam(params=self.model.parameters(), lr=self.learning_rate)
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
@@ -87,12 +79,12 @@ class ProtoRoutine(TrainTest):
             gamma=self.lr_scheduler_gamma,
             step_size=self.lr_scheduler_step
         )
-        
+
         train_loss = []
         train_acc = []
         val_loss = []
         val_acc = []
-        best_acc = 0
+        best_acc: float = 0.0
         best_loss = float("inf")
 
         # create output folder to store data
@@ -108,17 +100,18 @@ class ProtoRoutine(TrainTest):
         for eidx, epoch in enumerate(range(config.epochs)):
             Logger.instance().debug(f"=== Epoch: {epoch} ===")
             self.model.train()
+            self.dist_module.train()
             for x, y in tqdm(trainloader):
                 optim.zero_grad()
                 x, y = x.to(_CG.DEVICE), y.to(_CG.DEVICE)
+                
                 model_output = self.model(x)
-                
                 s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
-                prototypes = self.weight_module(s_batch.view(s_batch.shape[0], -1))
-                s_cat_q = DistScale.cat_support_query(s_batch, q_batch)
-                alphas = self.dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
+                protos = torch.mean(s_batch, dim=1)
+                mean_dists = ProtoTools.get_mean_dist(s_batch, protos)
+                alphas = self.dist_module(mean_dists)
+                loss, acc = ProtoTools.proto_loss(alphas, q_batch, protos)
                 
-                loss, acc = ProtoTools.proto_loss(alphas, q_batch, prototypes)
                 loss.backward()
                 optim.step()
                 train_loss.append(loss.item())
@@ -135,7 +128,6 @@ class ProtoRoutine(TrainTest):
                 Logger.instance().debug(f"Found the best model at epoch {epoch}!")
                 best_acc = avg_acc
                 torch.save(self.model.state_dict(), best_model_path)
-                torch.save(self.weight_module.state_dict(), os.path.join(os.path.dirname(best_model_path), "best_weight.pth"))
                 torch.save(self.dist_module.state_dict(), os.path.join(os.path.dirname(best_model_path), "best_scale.pth"))
 
             if avg_loss < best_loss:
@@ -150,7 +142,6 @@ class ProtoRoutine(TrainTest):
                 if avg_acc_eval >= best_acc:
                     Logger.instance().debug(f"Found the best evaluation model at epoch {epoch}!")
                     torch.save(self.model.state_dict(), val_model_path)
-                    torch.save(self.weight_module.state_dict(), os.path.join(os.path.dirname(val_model_path), "val_weight.pth"))
                     torch.save(self.dist_module.state_dict(), os.path.join(os.path.dirname(val_model_path), "val_scale.pth"))
 
                 # wandb
@@ -166,7 +157,6 @@ class ProtoRoutine(TrainTest):
                 pth_path = last_val_model_path if valloader is not None else last_model_path
                 Logger.instance().debug(f"STOP: saving last epoch model named `{os.path.basename(pth_path)}`")
                 torch.save(self.model.state_dict(), pth_path)
-                torch.save(self.weight_module.state_dict(), os.path.join(os.path.dirname(pth_path), "last_weight.pth"))
                 torch.save(self.dist_module.state_dict(), os.path.join(os.path.dirname(pth_path), "last_scale.pth"))
 
                 # wandb: save all models
@@ -180,17 +170,18 @@ class ProtoRoutine(TrainTest):
         n_way, k_support, k_query, episodes = (val_config)
         
         self.model.eval()
+        self.dist_module.eval()
         with torch.no_grad():
             for x, y in valloader:
                 x, y = x.to(_CG.DEVICE), y.to(_CG.DEVICE)
-                model_output = self.model(x)
                 
+                model_output = self.model(x)
                 s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
-                prototypes = self.weight_module(s_batch.view(s_batch.shape[0], -1))
-                s_cat_q = DistScale.cat_support_query(s_batch, q_batch)
-                alphas = self.dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
-                loss, acc = ProtoTools.proto_loss(alphas, q_batch, prototypes)
-
+                protos = torch.mean(s_batch, dim=1)
+                mean_dists = ProtoTools.get_mean_dist(s_batch, protos)
+                alphas = self.dist_module(mean_dists)   # validation only runs in training, so weight module cannot be null
+                loss, acc = ProtoTools.proto_loss(alphas, q_batch, protos)
+                
                 val_loss.append(loss.item())
                 val_acc.append(acc.item())
             avg_loss_eval = np.mean(val_loss[-episodes:])
@@ -220,7 +211,7 @@ class ProtoRoutine(TrainTest):
         
         ## extra modules
         n_way, k_support, k_query = (config.fsl.test_n_way, config.fsl.test_k_shot_s, config.fsl.test_k_shot_q)
-        if self.weight_module is None or self.dist_module is None or self.embedding_size is None:
+        if self.dist_module is None or self.embedding_size is None:
             dummyloader = self.init_loader(config, self.test_str)
             if dummyloader is None:
                 Logger.instance().warning("Dummyloader is None. No test performed")
@@ -228,18 +219,12 @@ class ProtoRoutine(TrainTest):
         
             dummy_batch = torch.Tensor(next(iter(dummyloader))[0]).detach().to(_CG.DEVICE)
             self.embedding_size = Model.get_output_size(self.model, dummy_batch)
-            self.weight_module = Weight(self.embedding_size * k_support, k_support).to(_CG.DEVICE)
-            self.dist_module = DistScale(self.embedding_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
+            self.dist_module = DistScale(n_way * n_way, n_way).to(_CG.DEVICE)
             del dummy_batch, dummyloader
         
-        # weight module
-        weight_module = Weight(self.embedding_size * k_support, k_support).to(_CG.DEVICE)
-        weight_module.load_state_dict(torch.load(os.path.join(os.path.dirname(model_path), "best_weight.pth")))
-
         # distance scale module
-        dist_module = DistScale(self.embedding_size * k_query * (k_support + k_query), k_support).to(_CG.DEVICE)
+        dist_module = DistScale(n_way * n_way, n_way).to(_CG.DEVICE)
         dist_module.load_state_dict(torch.load(os.path.join(os.path.dirname(model_path), "best_scale.pth")))
-        
         legacy_avg_acc = list()
         acc_per_epoch = { i: torch.FloatTensor().to(_CG.DEVICE) for i in range(len(self.test_info.info_dict.keys())) }
 
@@ -247,20 +232,22 @@ class ProtoRoutine(TrainTest):
         tr_max = TestResult()
         
         self.model.eval()
+        self.dist_module.eval()
         with torch.no_grad():
             for epoch in tqdm(range(10)):
                 tr = TestResult()
                 score_per_class = { i: torch.FloatTensor().to(_CG.DEVICE) for i in range(len(self.test_info.info_dict.keys())) }
                 for x, y in testloader:
                     x, y = x.to(_CG.DEVICE), y.to(_CG.DEVICE)
-                    y_pred = self.model(x)
 
-                    s_batch, q_batch = ProtoTools.split_support_query(y_pred, y, n_way, k_support, k_query)
-                    prototypes = weight_module(s_batch.view(s_batch.shape[0], -1))
-                    s_cat_q = DistScale.cat_support_query(s_batch, q_batch)
-                    alphas = dist_module(s_cat_q.view(s_cat_q.shape[0], -1))
+                    model_output = self.model(x)
+                    s_batch, q_batch = ProtoTools.split_support_query(model_output, y, n_way, k_support, k_query)
+                    protos = torch.mean(s_batch, dim=1)
+                    mean_dists = ProtoTools.get_mean_dist(s_batch, protos)
+                    alphas = self.dist_module(mean_dists)
                     
-                    legacy_acc, acc_vals = tr.proto_test(alphas, q_batch, prototypes)
+                    # (overall accuracy [legacy], accuracy per class)
+                    legacy_acc, acc_vals = tr.proto_test(alphas, q_batch, protos)
                     legacy_avg_acc.append(legacy_acc.item())
                     for k, v in acc_vals.items():
                         score_per_class[k] = torch.cat((score_per_class[k], v.reshape(1,)))
