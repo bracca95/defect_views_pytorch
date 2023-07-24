@@ -7,7 +7,7 @@ Your own dataset can be built by inheriting from the abstract class `CustomDatas
 ```
 "experiment_name": string,
 "dataset_path": string,
-"dataset_type": {`opt6`, `opt_bckg`, `binary`, `qplusv1`, `qplusv2`},
+"dataset_type": {`opt6`, `opt_bckg`, `opt_tricky`, `binary`, `qplusv1`, `qplusv2`},
 "dataset_splits": List[float] (1 for train/test (e.g. [0.8]), 3 for train/val/test),
 "batch_size": int,
 "epochs": int,
@@ -22,7 +22,7 @@ Your own dataset can be built by inheriting from the abstract class `CustomDatas
 If ProtoNet is required, add a new fields "fsl":
 ```
 "fsl": {
-  "model": str {"default", "mlp", "cnn", "cnn105", "resnet50", "hrnet_w18", "vit_tiny_patch16_224", "cnncompare", "cnn105compare"},
+  "model": str {"default", "mlp", "cnn", "cnn105", "resnet50", "hrnet_w18", "vit_tiny_patch16_224"}, compare variants allowed
   "episodes": int (suggested 100),
   "train_n_way": int,
   "train_k_shot_s": int

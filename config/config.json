@@ -7,10 +7,10 @@
         0.3,
         0.0
     ],
-    "batch_size": 32,
+    "batch_size": 4,
     "epochs": 100,
     "crop_size": 60,
-    "image_size": 105,
+    "image_size": 224,
     "augment_online": null,
     "augment_offline": null,
     "dataset_mean": [
@@ -20,7 +20,7 @@
         0.09033174067735672
     ],
     "fsl": {
-        "model": "default",
+        "model": "resnet50compare",
         "episodes": 100,
         "train_n_way": 12,
         "train_k_shot_s": 5,

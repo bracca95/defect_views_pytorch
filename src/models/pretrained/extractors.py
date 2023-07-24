@@ -2,11 +2,11 @@ import timm
 import torch
 
 from typing import Optional, List
-from torch import nn
+from src.models.model import Model
 from src.utils.tools import Logger
 
 
-class TimmFeatureExtractor(nn.Module):
+class TimmFeatureExtractor(Model):
     """Manage feature extraction with timm pretrained models
 
     Models are stored in ~/.cache/torch/hub/checkpoints/
