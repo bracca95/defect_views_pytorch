@@ -177,6 +177,9 @@ class StandardRoutine(TrainTest):
         with torch.no_grad():
             tot_samples = 0
             tot_correct = 0
+            all_labels = torch.Tensor([]).to(_CG.DEVICE)
+            all_cls_idxs = torch.Tensor([]).to(_CG.DEVICE)
+            all_pred_vals = torch.Tensor([]).to(_CG.DEVICE)
             for images, labels in testloader:
                 images = images.to(_CG.DEVICE)
                 labels = labels.to(_CG.DEVICE)
@@ -192,20 +195,25 @@ class StandardRoutine(TrainTest):
                 tot_correct += n_correct
 
                 # wandb
-                wandb.log({
+                all_labels = torch.cat((all_labels, labels), dim=0)
+                all_cls_idxs = torch.cat((all_cls_idxs, top_pred_idx), dim=0)
+                all_pred_vals = torch.cat((all_pred_vals, y_pred), dim=0)    
+    
+            # wandb
+            wandb.log({
                     "pr_curve": wandb.plot.pr_curve(
-                        labels.cpu().detach().numpy(),
-                        y_pred.cpu().detach().numpy(),
+                        all_labels.cpu().detach().numpy(),
+                        all_pred_vals.cpu().detach().numpy(),
                         labels=list(self.dataset.label_to_idx.keys())
                         )
-                    })
-                wandb.log({
+                })
+            wandb.log({
                     "confusion": wandb.plot.confusion_matrix(
-                        y_true=labels.cpu().detach().numpy(),
-                        preds=y_pred.cpu().detach().numpy(),
+                        y_true=all_labels.cpu().detach().numpy(),
+                        preds=all_cls_idxs.cpu().detach().numpy(),
                         class_names=list(self.dataset.label_to_idx.keys())
                         )
-                    })
+            })
 
             acc = tot_correct / tot_samples
             Logger.instance().debug(f"Test accuracy on {len(self.test_info.subset.indices)} images: {acc:.3f}")
