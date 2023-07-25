@@ -1,22 +1,23 @@
-import torch
 from torch import nn
 
 from src.models.model import Model
-from src.models.pretrained.extractors import TimmFeatureExtractor
+from src.utils.tools import Logger
+from src.utils.config_parser import Config
 
 
 class Head(Model):
 
-    def __init__(self, extractor: Model, out_class: int):
-        super().__init__()
-
-        # TODO: adapt to any type of extractor. ATM it works only with TimmFeatureExtractor
-        t = torch.randn(2, 1, 224, 224)
-        in_features = extractor(t).size(1) # (batch_size, feat, Opt[unpooled_size], Opt[unpooled_size])
+    def __init__(self, config: Config, extractor: Model, out_class: int, freeze: bool = False):
+        super().__init__(config)
 
         self.extractor = extractor
+        backbone_features: int = self.extractor.get_out_size(1)
+        if freeze:
+            Logger.instance().debug("freezing extractor layers")
+            list(map(lambda param: setattr(param, 'requires_grad', False), self.extractor.parameters()))
+
         self.linear = nn.Sequential(
-            nn.Linear(in_features, out_class),
+            nn.Linear(backbone_features, out_class),
             nn.Softmax(dim=-1)
         )
 

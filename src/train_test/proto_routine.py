@@ -29,7 +29,6 @@ class ProtoRoutine(TrainTest):
         self.lr_scheduler_step = 20
 
         # extra modules
-        self.embedding_size: Optional[int] = None
         self.dist_module: Optional[DistScale] = None
 
     def init_loader(self, config: Config, split_set: str):
@@ -59,15 +58,7 @@ class ProtoRoutine(TrainTest):
         ### extra modules
         n_way, k_support, k_query = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q)
         val_config = (config.fsl.train_n_way, config.fsl.train_k_shot_s, config.fsl.train_k_shot_q, config.fsl.episodes)
-        dummyloader = self.init_loader(config, self.train_str)
-        if dummyloader is None:
-            Logger.instance().warning("Dummyloader is None. No training performed")
-            return
-        
-        dummy_batch = torch.Tensor(next(iter(dummyloader))[0]).detach().to(_CG.DEVICE)
-        self.embedding_size = Model.get_output_size(self.model, dummy_batch)
         self.dist_module = DistScale(n_way * n_way, n_way).to(_CG.DEVICE)
-        del dummy_batch, dummyloader
         ### EOF
 
         trainloader = self.init_loader(config, self.train_str)
@@ -211,16 +202,7 @@ class ProtoRoutine(TrainTest):
         
         ## extra modules
         n_way, k_support, k_query = (config.fsl.test_n_way, config.fsl.test_k_shot_s, config.fsl.test_k_shot_q)
-        if self.dist_module is None or self.embedding_size is None:
-            dummyloader = self.init_loader(config, self.test_str)
-            if dummyloader is None:
-                Logger.instance().warning("Dummyloader is None. No test performed")
-                return
-        
-            dummy_batch = torch.Tensor(next(iter(dummyloader))[0]).detach().to(_CG.DEVICE)
-            self.embedding_size = Model.get_output_size(self.model, dummy_batch)
-            self.dist_module = DistScale(n_way * n_way, n_way).to(_CG.DEVICE)
-            del dummy_batch, dummyloader
+        self.dist_module = DistScale(n_way * n_way, n_way).to(_CG.DEVICE)
         
         # distance scale module
         dist_module = DistScale(n_way * n_way, n_way).to(_CG.DEVICE)

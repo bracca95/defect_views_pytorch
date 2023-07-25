@@ -4,6 +4,7 @@ import torch
 from typing import Optional, List
 from src.models.model import Model
 from src.utils.tools import Logger
+from src.utils.config_parser import Config
 
 
 class TimmFeatureExtractor(Model):
@@ -21,8 +22,8 @@ class TimmFeatureExtractor(Model):
         https://stackoverflow.com/a/62118437
     """
 
-    def __init__(self, name: str, in_chans: int, pooled: bool, mean: Optional[List[float]]=None, std: Optional[List[float]]=None):
-        super().__init__()
+    def __init__(self, config: Config, name: str, in_chans: int, pooled: bool, mean: Optional[List[float]]=None, std: Optional[List[float]]=None):
+        super().__init__(config)
         self.name = name
         self.in_chans = in_chans
         self.pooled = pooled
